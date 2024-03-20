@@ -1,63 +1,74 @@
-import tensorflow as tf
+# import tensorflow as tf
 import numpy as np
 import pandas as pd
 import os
-from tensorflow.keras.callbacks import ModelCheckpoint
-from sklearn.model_selection import train_test_split
-from yolov3.model import YOLOv3
-from yolov3.utils import freeze_all, unfreeze_all
-from yolov3.dataset import Dataset
+import cv2
+import mediapipe as mp
+import time
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
+mp_hands = mp.solutions.hands
+from tensorflow.keras.models import load_model
 
-# 데이터셋 경로 설정
-train_dataset_path = '/home/rds/Downloads/train/'
-seed = 13
-tf.random.set_seed(seed)
-np.random.seed(seed)
-train_df = pd.DataFrame({"file" : os.listdir(train_dataset_path)})
-train_df["label"] = train_df["file"].apply(lambda x: x.split(".")[0])
+# 저장된 모델 파일 경로
+model_path = "handModel.h5"
 
+# 모델 읽어오기
+model = load_model(model_path)
 
-train_data, val_data = train_test_split(train_df,
-                                        test_size=0.2,
-                                        stratify=train_df["label"],
-                                        random_state=13)
+#ㄴ, ㄷ, ㄹ, ㅈ, ㅊ, ㅏ, ㅑ, ㅓ, ㅕ
+data_dict = {0 : "ㄴ", 1 : "ㄷ", 2 : "ㄹ", 3 : "ㅈ", 4 : "ㅊ", 
+             5 : "ㅏ", 6 : "ㅑ", 7 : "ㅓ", 8 : "ㅕ"}
+cap = cv2.VideoCapture(0)
+count = 0
+old_key = 0
+DATA_DIR = '/home/rds/Desktop/git_ws//sign-korean-language/data/'
+with mp_hands.Hands(
+    model_complexity=0,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7) as hands:
+    while cap.isOpened():
+        xyz_list = []
+        success, image = cap.read()
+        if not success:
+            print("카메라를 찾을 수 없습니다.")# 동영상을 불러올 경우는 'continue' 대신 'break'를 사용합니다.
+            break
 
+        # 필요에 따라 성능 향상을 위해 이미지 작성을 불가능함으로 기본 설정합니다.
+        image.flags.writeable = False
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        results = hands.process(image)
 
-# 클래스 수 설정
-num_classes = 11  # 예시로 20개의 클래스
+        Null_image = np.zeros_like(image)
+        # 이미지에 손 주석을 그립니다.
+        image.flags.writeable = True
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        new_image = np.copy(image)
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(
+                image,
+                hand_landmarks,
+                mp_hands.HAND_CONNECTIONS,
+                mp_drawing_styles.get_default_hand_landmarks_style(),
+                mp_drawing_styles.get_default_hand_connections_style())
 
-# YOLO 모델 생성
-yolo = YOLOv3(classes=num_classes)
+            
+            for i, landmark in enumerate(hand_landmarks.landmark):
+                row = [landmark.x - hand_landmarks.landmark[0].x, landmark.y - hand_landmarks.landmark[0].y, landmark.z - hand_landmarks.landmark[0].z]
+                xyz_list.append(row)
+            
+            arr = np.array(xyz_list)
+            arr = arr.reshape(1, 21, 3)
+            # print((arr.shape))
+            yhat = model.predict(arr)[0]
+            result = np.argmax(yhat)
+            print(data_dict[result])
+            
 
-# 데이터셋 로드
-train_dataset = Dataset(train_dataset_path, image_size=yolo.input_size)
-val_dataset = Dataset(val_dataset_path, image_size=yolo.input_size)
-
-# 모델 컴파일
-optimizer = tf.keras.optimizers.Adam(lr=1e-4)
-yolo.compile(optimizer=optimizer, loss_fn=None)
-
-# 사전 학습된 가중치 불러오기 (선택 사항)
-# yolo.load_weights("path/to/pretrained_weights")
-
-# 학습 전에 모든 레이어를 동결
-freeze_all(yolo)
-
-# 학습할 레이어 선택 (예시: 마지막 75개 레이어만 학습)
-unfreeze_all(yolo)
-for i in range(-75, 0):
-    yolo.layers[i].trainable = True
-
-# 모델 체크포인트 설정
-checkpoint = ModelCheckpoint("path/to/save/checkpoints/weights.{epoch:02d}.h5", verbose=1)
-
-# 학습
-history = yolo.fit(
-    train_dataset,
-    epochs=50,  # 예시로 50 에포크
-    validation_data=val_dataset,
-    callbacks=[checkpoint]
-)
-
-# 학습 결과 저장
-yolo.save_weights("path/to/save/weights/final_weights.h5")
+                
+        #보기 편하게 이미지를 좌우 반전합니다.
+        cv2.imshow('MediaPipe Hands', cv2.flip(image, 1))
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+cap.release()
